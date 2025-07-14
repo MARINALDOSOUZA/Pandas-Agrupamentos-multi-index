@@ -1,0 +1,734 @@
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# --- Configurações globais do sistema ---
+EXCEL_FILE_PATH = 'D:\\Python para Data Science\\1-SEEG10_GERAL-BR_UF_2022.10.27-FINAL-SITE.xlsx'
+SHEET_NAME = 'GEE Estados'
+CSV_FILE_PATH = 'dados_transformados.csv'
+
+# --- Funções Auxiliares Comuns ---
+
+def _load_excel_data(path: str, sheet_name: str) -> pd.DataFrame:
+    """
+    Carrega dados de um arquivo Excel e lida com possíveis erros de arquivo.
+
+    Args:
+        path (str): O caminho completo para o arquivo Excel.
+        sheet_name (str): O nome da aba dentro do arquivo Excel a ser carregada.
+
+    Returns:
+        pd.DataFrame: O DataFrame contendo os dados do Excel.
+
+    Raises:
+        FileNotFoundError: Se o arquivo Excel não for encontrado.
+        Exception: Para outros erros inesperados durante o carregamento.
+    """
+    print('Carregando dados do Excel...')
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name)
+    except FileNotFoundError:
+        print(f'Erro: O arquivo Excel não foi encontrado em: {path}')
+        print('Verifique o caminho e o nome do arquivo.')
+        raise
+    except Exception as e:
+        print(f'Erro ao carregar o Excel: {e}')
+        raise
+
+def _transform_dataframe_to_long_format(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transforma o DataFrame de formato wide (colunas de ano) para long.
+
+    Args:
+        df (pd.DataFrame): O DataFrame original no formato wide.
+
+    Returns:
+        pd.DataFrame: O DataFrame transformado no formato long, com colunas 'Ano' e 'Emissões_Ano'.
+
+    Raises:
+        ValueError: Se nenhuma coluna de ano for detectada.
+    """
+    print('Transformando dados (wide para long format)...')
+    year_columns = [col for col in df.columns if isinstance(col, int) or (isinstance(col, str) and str(col).isdigit())]
+    if not year_columns:
+        raise ValueError('Nenhuma coluna de ano detectada.')
+
+    id_vars = [
+        'Nível 1 - Setor', 'Nível 2', 'Nível 3', 'Nível 4', 'Nível 5', 'Nível 6',
+        'Emissão / Remoção / Bunker', 'Gás', 'Estado', 'Atividade Econômica', 'Produto'
+    ]
+    existing_id_vars = [col for col in id_vars if col in df.columns]
+
+    df_long = df.melt(
+        id_vars=existing_id_vars,
+        value_vars=year_columns,
+        var_name='Ano',
+        value_name='Emissões_Ano'
+    )
+    df_long['Ano'] = pd.to_numeric(df_long['Ano'], errors='coerce').astype('Int64')
+    df_long['Emissões_Ano'] = pd.to_numeric(df_long['Emissões_Ano'], errors='coerce')
+    return df_long
+
+def _select_and_clean_relevant_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Seleciona colunas relevantes, limpa valores nulos essenciais e otimiza tipos de dados.
+
+    Args:
+        df (pd.DataFrame): O DataFrame a ser limpo e otimizado.
+
+    Returns:
+        pd.DataFrame: O DataFrame limpo e com tipos de dados otimizados.
+    """
+    relevant_columns = [
+        'Nível 1 - Setor', 'Atividade Econômica', 'Gás', 'Ano', 'Emissões_Ano'
+    ]
+    df_clean = df[[col for col in relevant_columns if col in df.columns]].copy()
+
+    original_rows = len(df_clean)
+    # Remove linhas com valores nulos nas colunas essenciais
+    df_clean = df_clean.dropna(subset=['Ano', 'Emissões_Ano', 'Nível 1 - Setor', 'Atividade Econômica', 'Gás'])
+
+    rows_removed = original_rows - len(df_clean)
+    if rows_removed > 0:
+        print(f'Removidas {rows_removed} linhas com valores nulos em colunas essenciais.')
+
+    # Otimização: Converte colunas categóricas para o tipo 'category' do Pandas
+    if 'Nível 1 - Setor' in df_clean.columns:
+        df_clean['Nível 1 - Setor'] = df_clean['Nível 1 - Setor'].astype('category')
+    if 'Atividade Econômica' in df_clean.columns:
+        df_clean['Atividade Econômica'] = df_clean['Atividade Econômica'].astype('category')
+    if 'Gás' in df_clean.columns:
+        df_clean['Gás'] = df_clean['Gás'].astype('category')
+
+    return df_clean
+
+def load_or_process_data(excel_path: str, sheet: str, csv_path: str) -> pd.DataFrame:
+    """
+    Carrega dados de um arquivo CSV existente ou processa o Excel original
+    e salva o resultado em CSV para carregamentos futuros mais rápidos.
+
+    Args:
+        excel_path (str): Caminho para o arquivo Excel original.
+        sheet (str): Nome da aba no arquivo Excel.
+        csv_path (str): Caminho para o arquivo CSV de cache.
+
+    Returns:
+        pd.DataFrame: O DataFrame final pronto para uso.
+    """
+    if os.path.exists(csv_path):
+        try:
+            print(f'Tentando carregar dados de: {csv_path} (carregamento rápido)...')
+            df_global = pd.read_csv(csv_path)
+
+            # Garante que os tipos de dados estejam corretos após carregar do CSV
+            df_global['Ano'] = pd.to_numeric(df_global['Ano'], errors='coerce').astype('Int64')
+            df_global['Emissões_Ano'] = pd.to_numeric(df_global['Emissões_Ano'], errors='coerce')
+
+            # Otimização: Re-aplica category type após carregar do CSV
+            if 'Nível 1 - Setor' in df_global.columns:
+                df_global['Nível 1 - Setor'] = df_global['Nível 1 - Setor'].astype('category')
+            if 'Atividade Econômica' in df_global.columns:
+                df_global['Atividade Econômica'] = df_global['Atividade Econômica'].astype('category')
+            if 'Gás' in df_global.columns:
+                df_global['Gás'] = df_global['Gás'].astype('category')
+
+            # Verifica e remove nulos essenciais novamente, caso o CSV esteja corrompido
+            required_cols = ['Ano', 'Emissões_Ano', 'Nível 1 - Setor', 'Atividade Econômica', 'Gás']
+            original_rows = len(df_global)
+            df_global = df_global.dropna(subset=required_cols)
+            if len(df_global) < original_rows:
+                print(f'Removidas {original_rows - len(df_global)} linhas com nulos essenciais no CSV carregado.')
+
+            print(f'Dados carregados com sucesso de: {csv_path}')
+            return df_global
+        except (pd.errors.EmptyDataError, ValueError, FileNotFoundError, Exception) as e:
+            print(f'Erro ao carregar ou validar o CSV existente ({e}). Recarregando e transformando do Excel.')
+
+    print(f'Arquivo CSV \'{csv_path}\' não encontrado ou inválido. Carregando e transformando do Excel pela primeira vez.')
+    df_excel = _load_excel_data(excel_path, sheet)
+    df_long = _transform_dataframe_to_long_format(df_excel)
+    df_final = _select_and_clean_relevant_columns(df_long) # Aplica otimização de tipos aqui
+
+    try:
+        df_final.to_csv(csv_path, index=False)
+        print(f'Dados transformados e salvos com sucesso como: {csv_path}')
+    except IOError as e:
+        print(f'Erro de E/S ao tentar salvar o arquivo CSV: {e}')
+        print('Isso pode ocorrer se o arquivo estiver em uso por outro programa. Por favor, feche e tente novamente.')
+        raise
+
+    return df_final
+
+def get_unique_sorted_values(df: pd.DataFrame, column: str, display_name: str) -> list:
+    """
+    Retorna e exibe valores únicos e ordenados de uma coluna específica do DataFrame.
+
+    Args:
+        df (pd.DataFrame): O DataFrame de onde extrair os valores.
+        column (str): O nome da coluna para obter os valores únicos.
+        display_name (str): O nome amigável da coluna para exibição ao usuário.
+
+    Returns:
+        list: Uma lista de valores únicos e ordenados.
+    """
+    unique_values = sorted(df[column].dropna().unique().tolist())
+    if not unique_values:
+        print(f'Nenhum {display_name.lower()} disponível. Verifique os dados.')
+        return []
+
+    print(f'\n--- {display_name}s disponíveis ---')
+    for idx, val in enumerate(unique_values):
+        print(f'{idx}: {val}')
+    return unique_values
+
+def get_user_selection(available_values: list, prompt: str, allow_multiple: bool = True) -> list:
+    """
+    Solicita ao usuário que selecione itens de uma lista de valores disponíveis
+    por meio de seus índices.
+
+    Args:
+        available_values (list): Lista de valores que o usuário pode escolher.
+        prompt (str): A mensagem a ser exibida ao usuário.
+        allow_multiple (bool): Se True, permite múltiplas seleções (separadas por vírgula).
+                               Se False, permite apenas uma seleção.
+
+    Returns:
+        list: Uma lista dos valores selecionados pelo usuário.
+    """
+    entrada = input(prompt).strip()
+    if not entrada:
+        return available_values if allow_multiple else []
+
+    try:
+        indices = [int(i.strip()) for i in entrada.split(',') if i.strip()]
+        selected_values = [available_values[i] for i in indices if 0 <= i < len(available_values)]
+
+        if not selected_values:
+            raise ValueError('Nenhum item válido selecionado. Digite índices válidos.')
+        if not allow_multiple and len(selected_values) > 1:
+            raise ValueError('Apenas um item pode ser selecionado.')
+        return selected_values
+    except (ValueError, IndexError) as e:
+        print(f'Erro na seleção: {e}. Digite números válidos e dentro do intervalo.')
+        return []
+
+def get_year_selection(available_years: list, prompt: str) -> list:
+    """
+    Pede ao usuário para selecionar anos, permitindo seleção por índices,
+    intervalo de índices ou intervalo de anos literais.
+    Também aceita anos literais individuais ou múltiplos (separados por vírgula).
+
+    Args:
+        available_years (list): Lista de anos disponíveis para seleção.
+        prompt (str): A mensagem a ser exibida ao usuário.
+
+    Returns:
+        list: Uma lista dos anos selecionados pelo usuário.
+    """
+    entrada = input(prompt).strip()
+    if not entrada:
+        return available_years
+
+    try:
+        selected_years = []
+        if ':' in entrada: # Tratamento de intervalo (ex: "2000:2010" ou "42:46")
+            start_str, end_str = entrada.split(':')
+            start_val = int(start_str.strip())
+            end_val = int(end_str.strip())
+
+            is_valid_index_range = (0 <= start_val < len(available_years) and
+                                    0 <= end_val < len(available_years) and
+                                    start_val <= end_val)
+
+            min_year = min(available_years) if available_years else None
+            max_year = max(available_years) if available_years else None
+            is_valid_year_literal_range = False
+            if min_year is not None and max_year is not None:
+                is_valid_year_literal_range = (min_year <= start_val <= max_year and
+                                               min_year <= end_val <= max_year and
+                                               start_val <= end_val)
+
+            if is_valid_index_range:
+                print(f"Interpretando '{entrada}' como intervalo de ÍNDICES.")
+                selected_years = [available_years[i] for i in range(start_val, end_val + 1)]
+            elif is_valid_year_literal_range:
+                print(f"Interpretando '{entrada}' como intervalo de ANOS LITERAIS.")
+                selected_years = [year for year in available_years if start_val <= year <= end_val]
+            else:
+                error_msgs = []
+                if start_val > end_val:
+                    error_msgs.append(f"O valor inicial ({start_val}) é maior que o valor final ({end_val}).")
+
+                if not (0 <= start_val < len(available_years) and 0 <= end_val < len(available_years)):
+                    error_msgs.append(f"Índices devem estar entre 0 e {len(available_years)-1}.")
+
+                if available_years and not (min_year <= start_val <= max_year and
+                                             min_year <= end_val <= max_year):
+                    error_msgs.append(f"Anos devem estar entre {min_year} e {max_year}.")
+
+                print(f'Erro: Intervalo "{entrada}" inválido. {" ".join(error_msgs) if error_msgs else "Verifique a entrada."}')
+                return []
+        else: # Tratamento de anos individuais ou múltiplos (ex: "2021" ou "40,41")
+            partes_entrada = [p.strip() for p in entrada.split(',') if p.strip()]
+
+            # Tenta primeiro como anos literais
+            potential_years_literal = []
+            all_parts_are_numbers = True
+            for p in partes_entrada:
+                try:
+                    potential_years_literal.append(int(p))
+                except ValueError:
+                    all_parts_are_numbers = False
+                    break # Se um não for número, desiste da interpretação literal
+
+            if all_parts_are_numbers and all(y in available_years for y in potential_years_literal):
+                print(f"Interpretando '{entrada}' como ANOS LITERAIS.")
+                selected_years = potential_years_literal
+            else:
+                # Se não for ano literal válido, tenta como índices
+                print(f"Interpretando '{entrada}' como ÍNDICES.")
+                indices = []
+                for p in partes_entrada:
+                    try:
+                        idx = int(p)
+                        if 0 <= idx < len(available_years):
+                            indices.append(idx)
+                        else:
+                            print(f'Aviso: Índice "{p}" fora do intervalo válido. Ignorando.')
+                    except ValueError:
+                        print(f'Aviso: Entrada inválida "{p}". Ignorando.')
+
+                if not indices:
+                    print('Nenhum índice de ano válido selecionado.')
+                    return []
+                selected_years = [available_years[i] for i in indices]
+
+        if not selected_years:
+            print(f'Nenhum ano válido encontrado para a seleção "{entrada}".')
+            return []
+        return selected_years
+
+    except ValueError as e:
+        print(f'Erro na seleção de anos: {e}. Verifique o formato da entrada.')
+        return []
+    except Exception as e:
+        print(f'Ocorreu um erro inesperado ao processar a seleção de anos: {e}')
+        return []
+
+
+def display_paginated_dataframe(df_to_display: pd.DataFrame, sort_column: str = 'Emissões_Ano'):
+    """
+    Gerencia a paginação e exibição de um DataFrame.
+
+    Args:
+        df_to_display (pd.DataFrame): O DataFrame a ser exibido.
+        sort_column (str): A coluna pela qual o DataFrame deve ser ordenado para exibição.
+    """
+    total_rows = len(df_to_display)
+    if total_rows == 0:
+        print("Não há linhas para exibir após os filtros.")
+        return
+
+    linhas_a_exibir_default = 100
+
+    while True:
+        try:
+            prompt_linhas = (f'Digite: ENTER para as primeiras {linhas_a_exibir_default} linhas, '
+                             f'um número para exibir as N primeiras, ou "inicio:fim" para um intervalo (ex: 1:100): ')
+            entrada_linhas = input(prompt_linhas).strip()
+
+            start_row, end_row = 0, total_rows
+
+            if not entrada_linhas:
+                end_row = min(linhas_a_exibir_default, total_rows)
+            elif ':' in entrada_linhas:
+                parts = entrada_linhas.split(':')
+                if len(parts) == 2:
+                    start_input, end_input = parts[0].strip(), parts[1].strip()
+                    start_row = int(start_input) - 1 if start_input else 0
+                    end_row = int(end_input) if end_input else total_rows
+                else:
+                    print('Formato de intervalo inválido. Use "inicio:fim", "inicio:" ou ":fim".')
+                    continue
+            else:
+                num_linhas = int(entrada_linhas)
+                if num_linhas <= 0:
+                    print('O número de linhas deve ser maior que zero.')
+                    continue
+                end_row = min(num_linhas, total_rows)
+
+            if not (0 <= start_row < total_rows and start_row < end_row):
+                print(f'Intervalo inválido. Linha inicial deve ser >= 1 e <= {total_rows}, e linha final maior que a inicial.')
+                continue
+            if end_row > total_rows:
+                print(f'Atenção: A linha final ({end_row}) excede o total de linhas ({total_rows}). Exibindo até a última linha disponível.')
+                end_row = total_rows
+
+            print(f'\n--- Exibindo linhas de {start_row + 1} a {end_row} (ordenadas por {sort_column} decrescente) ---')
+            print(df_to_display.iloc[start_row:end_row])
+            break
+        except ValueError:
+            print('Entrada inválida. Digite números inteiros ou um formato de intervalo válido.')
+        except Exception as e:
+            print(f'Ocorreu um erro inesperado na paginação: {e}')
+
+def display_validity_stats(df: pd.DataFrame, column_for_validity: str = 'Emissões_Ano'):
+    """
+    Exibe estatísticas de validade (contagem de valores nulos) para uma coluna específica
+    dentro do DataFrame.
+
+    Args:
+        df (pd.DataFrame): O DataFrame para análise.
+        column_for_validity (str): A coluna a ser verificada quanto à validade dos dados.
+    """
+    original_rows = len(df)
+    valid_rows = df[column_for_validity].notna().sum()
+    invalid_rows = original_rows - valid_rows
+
+    print('\n--- Estatísticas de Validade Geral do DataFrame ---')
+    print(f'Total de linhas carregadas: {original_rows}')
+    print(f'Linhas com \'{column_for_validity}\' válidas: {valid_rows}')
+    print(f'Linhas com \'{column_for_validity}\' nulas/inválidas (desconsideradas): {invalid_rows}')
+
+    if original_rows > 0:
+        perc_validas = (valid_rows / original_rows) * 100
+        perc_invalidas = (invalid_rows / original_rows) * 100
+        print(f'Porcentagem de linhas válidas: {perc_validas:.2f}%')
+    else:
+        print('Não há dados para calcular porcentagens.')
+
+def _get_filtered_dataframe(df: pd.DataFrame, filter_col: str, display_name: str, allow_multiple: bool = True) -> tuple[pd.DataFrame | None, list]:
+    """
+    Função auxiliar para aplicar um filtro comum a um DataFrame (setor, atividade, gás).
+
+    Args:
+        df (pd.DataFrame): O DataFrame a ser filtrado.
+        filter_col (str): O nome da coluna a ser usada para o filtro.
+        display_name (str): O nome amigável da coluna para exibição ao usuário.
+        allow_multiple (bool): Se True, permite seleção múltipla de valores.
+
+    Returns:
+        tuple[pd.DataFrame | None, list]: Uma tupla contendo o DataFrame filtrado e a lista
+                                         de valores escolhidos. Retorna (None, []) se a seleção for inválida.
+    """
+    available_values = get_unique_sorted_values(df, filter_col, display_name)
+    if not available_values:
+        return None, []
+
+    chosen_values = get_user_selection(available_values,
+                                       f'Digite os índices d{"" if allow_multiple else "o"}s {display_name.lower()}s desejados (separados por vírgula), ou ENTER para {"todos" if allow_multiple else "este"}: ',
+                                       allow_multiple=allow_multiple)
+    if not chosen_values:
+        print(f'Nenhum {display_name.lower()} válido selecionado. Retornando ao menu.')
+        return None, []
+
+    df_filtered_result = df[df[filter_col].isin(chosen_values)].copy()
+    print(f'\nDados filtrados para {display_name}s: {chosen_values}')
+
+    return df_filtered_result, chosen_values
+
+def _display_pivot_table(df_filtered: pd.DataFrame, index_cols: list, columns_col: str, values_col: str = 'Emissões_Ano'):
+    """
+    Exibe uma tabela dinâmica (pivot_table) dos dados filtrados, com formatação melhorada.
+    Remove linhas do resumo onde todos os valores de emissão são zero.
+    Agora também foca nas colunas ativas para evitar gases/anos irrelevantes na exibição.
+
+    Args:
+        df_filtered (pd.DataFrame): O DataFrame contendo os dados a serem pivotados.
+        index_cols (list): Lista de nomes de colunas para formar o índice (linhas) da tabela pivô.
+        columns_col (str): Nome da coluna para formar as colunas da tabela pivô.
+        values_col (str): Nome da coluna cujos valores serão agregados (padrão 'Emissões_Ano').
+    """
+    if df_filtered.empty:
+        print("Não há dados para gerar a tabela resumo após os filtros aplicados.")
+        return
+
+    try:
+        # Garante que as colunas de índice e coluna existam no DataFrame
+        for col in index_cols + [columns_col]:
+            if col not in df_filtered.columns:
+                print(f"Erro: Coluna '{col}' necessária para o resumo não encontrada no DataFrame filtrado.")
+                return
+
+        # --- INÍCIO DA MELHORIA: TRATAMENTO DE COLUNAS CATEGÓRICAS PARA EVITAR COLUNAS VAZIAS ---
+        temp_df_for_pivot = df_filtered.copy()
+        if pd.api.types.is_categorical_dtype(temp_df_for_pivot[columns_col]):
+            # Remove categorias que não estão presentes no DataFrame filtrado atual
+            temp_df_for_pivot[columns_col] = temp_df_for_pivot[columns_col].cat.remove_unused_categories()
+        # --- FIM DA MELHORIA ---
+
+        pivot_df = temp_df_for_pivot.pivot_table( # Usa o temp_df_for_pivot
+            index=index_cols,
+            columns=columns_col,
+            values=values_col,
+            aggfunc='sum',
+            fill_value=0, # Preenche NaN com 0 para melhor visualização
+            observed=True # Mudar para True para que só as categorias "observadas" (existentes no temp_df_for_pivot) sejam incluídas.
+                          # Isso, combinado com remove_unused_categories, garante que só colunas com dados apareçam.
+        )
+
+        # Calcula a soma de cada linha (ao longo das colunas de anos/gases)
+        # Transforma o MultiIndex em colunas temporárias para somar se necessário
+        temp_pivot_df = pivot_df.reset_index()
+        
+        # Seleciona apenas as colunas numéricas para somar
+        numeric_cols = temp_pivot_df.select_dtypes(include=['number']).columns
+        
+        # Se não houver colunas numéricas (o que não deve acontecer para 'Emissões_Ano'), retorna erro
+        if numeric_cols.empty:
+            print("Não há colunas numéricas para somar na tabela resumo.")
+            return
+            
+        # Cria uma coluna temporária para a soma das emissões por linha
+        temp_pivot_df['Total_Emissoes_Linha'] = temp_pivot_df[numeric_cols].sum(axis=1)
+        
+        # Filtra para manter apenas as linhas onde a soma não é zero
+        pivot_df_filtered = temp_pivot_df[temp_pivot_df['Total_Emissoes_Linha'] != 0]
+        
+        # Remove a coluna temporária e redefine o índice
+        pivot_df_filtered = pivot_df_filtered.drop(columns=['Total_Emissoes_Linha']).set_index(index_cols)
+
+        if pivot_df_filtered.empty:
+            print("Nenhum dado com emissões diferentes de zero encontrado para exibir no resumo.")
+            return
+
+        print('\n--- Tabela Resumo Cruzada (Emissões Totais - Somente com dados) ---')
+
+        # Temporariamente altera as opções de exibição do pandas
+        with pd.option_context('display.max_rows', None,
+                               'display.max_columns', None,
+                               'display.width', 1000):
+            print(pivot_df_filtered.to_string(float_format="{:,.2f}".format))
+
+    except KeyError as e:
+        print(f'Erro ao criar tabela resumo: Coluna necessária não encontrada ({e}).')
+    except Exception as e:
+        print(f'Ocorreu um erro ao gerar a tabela resumo: {e}')
+
+
+# --- Opção 1 do Menu: Visualização Geral por Setor e Atividade Econômica ---
+def visualizacao_geral(df: pd.DataFrame):
+    """
+    Permite visualizar dados gerais filtrados por Setor e Atividade Econômica.
+    Oferece opção para tabela detalhada ou resumo cruzado por ano.
+
+    Args:
+        df (pd.DataFrame): O DataFrame global de dados de emissões.
+    """
+    df_current = df.copy()
+
+    df_current, setores_escolhidos = _get_filtered_dataframe(df_current, 'Nível 1 - Setor', 'Setor (Nível 1)')
+    if df_current is None: return
+
+    df_current, atividades_escolhidas = _get_filtered_dataframe(df_current, 'Atividade Econômica', 'Atividade Econômica')
+    if df_current is None: return
+
+    df_current = df_current.dropna(subset=['Emissões_Ano'])
+    if df_current.empty:
+        print('Nenhum dado válido encontrado para esta combinação de filtros.')
+        return
+
+    while True:
+        choice = input('\nDeseja ver (D)etalhes ou (R)esumo por Ano? (D/R): ').strip().upper()
+        if choice == 'D':
+            df_display = df_current.sort_values(by='Emissões_Ano', ascending=False)
+            display_paginated_dataframe(df_display[['Nível 1 - Setor', 'Atividade Econômica', 'Gás', 'Ano', 'Emissões_Ano']])
+            break
+        elif choice == 'R':
+            # Solicita a seleção de anos para o pivot table
+            anos_disponiveis = get_unique_sorted_values(df_current, 'Ano', 'Ano para o Resumo')
+            if not anos_disponiveis:
+                print("Nenhum ano disponível para gerar o resumo. Retornando.")
+                break
+
+            anos_para_resumo = get_year_selection(anos_disponiveis,
+                                                  'Digite os anos para as COLUNAS do resumo (ex: "2000,2010,2020" ou "2000:2010"), ou ENTER para TODOS: ')
+            if not anos_para_resumo:
+                print("Nenhum ano selecionado para o resumo. Retornando.")
+                break
+
+            # Filtra o DataFrame para incluir apenas os anos selecionados para o pivot
+            df_pivot_ready = df_current[df_current['Ano'].isin(anos_para_resumo)].copy()
+
+            if df_pivot_ready.empty:
+                print('Nenhum dado encontrado para os anos selecionados para o resumo. Tente novamente.')
+                break
+
+            _display_pivot_table(df_pivot_ready,
+                                 index_cols=['Nível 1 - Setor', 'Atividade Econômica'],
+                                 columns_col='Ano')
+            break
+        else:
+            print('Opção inválida. Digite D para Detalhes ou R para Resumo.')
+
+
+# --- Opção 2 do Menu: Consulta Detalhada por Setor, Atividade, Gás e Anos ---
+def consulta_detalhada(df: pd.DataFrame):
+    """
+    Permite consultar emissões por setor, atividade, gás e anos, com estatísticas.
+    Oferece opção para tabela detalhada ou resumo cruzado (por Ano ou por Gás/Ano).
+
+    Args:
+        df (pd.DataFrame): O DataFrame global de dados de emissões.
+    """
+    df_current = df.copy()
+
+    df_current, setores_escolhidos = _get_filtered_dataframe(df_current, 'Nível 1 - Setor', 'Setor (Nível 1)')
+    if df_current is None: return
+
+    df_current, atividades_escolhidas = _get_filtered_dataframe(df_current, 'Atividade Econômica', 'Atividade Econômica')
+    if df_current is None: return
+
+    df_current, gases_escolhidos = _get_filtered_dataframe(df_current, 'Gás', 'Gás')
+    if df_current is None: return
+
+    anos_disponiveis = get_unique_sorted_values(df_current, 'Ano', 'Ano')
+    if not anos_disponiveis: return
+
+    anos_escolhidos = get_year_selection(anos_disponiveis,
+                                          'Digite os anos desejados (ex: "2000,2005" para anos específicos, "42:46" para intervalo de índices, ou "2000:2010" para intervalo de anos), ou ENTER para todos: ')
+    if not anos_escolhidos:
+        print('Nenhum ano válido selecionado. Retornando ao menu.')
+        return
+    df_current = df_current[df_current['Ano'].isin(anos_escolhidos)].copy()
+    print(f'Dados filtrados para Anos: {anos_escolhidos}')
+
+    df_current = df_current.dropna(subset=['Emissões_Ano'])
+    if df_current.empty:
+        print('Nenhum dado válido encontrado para esta combinação de filtros.')
+        return
+
+    print('\n--- Estatísticas Descritivas das \'Emissões_Ano\' ---')
+    print(df_current['Emissões_Ano'].describe())
+
+    while True:
+        choice = input('\nDeseja ver (D)etalhes ou (R)esumo cruzado? (D/R): ').strip().upper()
+        if choice == 'D':
+            df_display = df_current.sort_values(by='Emissões_Ano', ascending=False)
+            display_paginated_dataframe(df_display[['Nível 1 - Setor', 'Atividade Econômica', 'Gás', 'Ano', 'Emissões_Ano']])
+            break
+        elif choice == 'R':
+            pivot_choice = input('Deseja resumir por (A)no ou por (G)ás e Ano? (A/G): ').strip().upper()
+            if pivot_choice == 'A':
+                _display_pivot_table(df_current,
+                                     index_cols=['Nível 1 - Setor', 'Atividade Econômica', 'Gás'],
+                                     columns_col='Ano')
+            elif pivot_choice == 'G':
+                # Garante que apenas as combinações de Gás e Ano com emissões válidas
+                # sejam consideradas para a tabela dinâmica por Gás
+                df_pivot_by_gas_ready = df_current.copy()
+                
+                # Filtrar linhas onde Emissões_Ano não é nulo e não é zero,
+                # garantindo que só gases com emissões nos anos selecionados sejam exibidos
+                df_pivot_by_gas_ready = df_pivot_by_gas_ready[df_pivot_by_gas_ready['Emissões_Ano'].notna()]
+                df_pivot_by_gas_ready = df_pivot_by_gas_ready[df_pivot_by_gas_ready['Emissões_Ano'] != 0]
+
+                if df_pivot_by_gas_ready.empty:
+                    print("Nenhum dado com emissões diferentes de zero para a combinação de Gás e Ano selecionada.")
+                    break # Sai do loop do resumo
+
+                _display_pivot_table(df_pivot_by_gas_ready, # Passa o DataFrame já pré-filtrado
+                                     index_cols=['Nível 1 - Setor', 'Atividade Econômica', 'Ano'],
+                                     columns_col='Gás')
+            else:
+                print('Opção de resumo inválida. Voltando à seleção de tipo de visualização.')
+                continue
+            break
+        else:
+            print('Opção inválida. Digite D para Detalhes ou R para Resumo.')
+
+
+# --- Opção 3 do Menu: Estatísticas Gráficas de Emissões por Setor ---
+def estatisticas_graficas(df: pd.DataFrame):
+    """
+    Gera um gráfico de linha da evolução das emissões para um Setor (Nível 1) selecionado.
+
+    Args:
+        df (pd.DataFrame): O DataFrame global de dados de emissões.
+    """
+    setores_disponiveis = get_unique_sorted_values(df, 'Nível 1 - Setor', 'Setor (Nível 1)')
+    if not setores_disponiveis: return
+
+    setor_escolhido_list = get_user_selection(setores_disponiveis,
+                                             'Digite o índice do Setor (Nível 1) desejado para o gráfico (APENAS UM): ',
+                                             allow_multiple=False)
+    if not setor_escolhido_list: return
+    setor_escolhido = setor_escolhido_list[0]
+
+    df_setor = df[df['Nível 1 - Setor'] == setor_escolhido].copy()
+    df_setor = df_setor.dropna(subset=['Emissões_Ano', 'Ano'])
+
+    if df_setor.empty:
+        print(f'Nenhum dado válido encontrado para o setor "{setor_escolhido}" para gerar o gráfico.')
+        return
+
+    emissao_por_ano = df_setor.groupby('Ano')['Emissões_Ano'].sum().reset_index()
+    emissao_por_ano = emissao_por_ano.sort_values(by='Ano')
+
+    if emissao_por_ano.empty:
+        print(f'Nenhuma emissão total encontrada para o setor "{setor_escolhido}" ao longo dos anos.')
+        return
+
+    emissions_values = emissao_por_ano['Emissões_Ano']
+    max_emission = emissions_values.max()
+    min_emission = emissions_values.min()
+    mean_emission = emissions_values.mean()
+
+    year_max = emissao_por_ano.loc[emissions_values.idxmax(), 'Ano']
+    year_min = emissao_por_ano.loc[emissions_values.idxmin(), 'Ano']
+
+    plt.figure(figsize=(14, 7))
+    sns.lineplot(x='Ano', y='Emissões_Ano', data=emissao_por_ano, marker='o', color='blue', linewidth=2)
+
+    plt.plot(year_max, max_emission, 'o', color='black', markersize=10, label=f'Pico: {max_emission:.2f} ({year_max})')
+    plt.axhline(mean_emission, color='orange', linestyle='--', label=f'Média: {mean_emission:.2f}')
+    plt.plot(year_min, min_emission, 'o', color='green', markersize=10, label=f'Mínimo: {min_emission:.2f} ({year_min})')
+
+    plt.xlabel('Ano')
+    plt.ylabel('Emissões (toneladas CO2e)')
+    plt.title(f'Evolução das Emissões para o Setor: {setor_escolhido}')
+    plt.xticks(emissao_por_ano['Ano'].unique(), rotation=45, ha='right')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+# --- Função: Exibe o menu principal e gerencia a interação do usuário ---
+def display_menu(df: pd.DataFrame):
+    """
+    Exibe o menu de opções para o usuário e gerencia a navegação entre as funcionalidades.
+
+    Args:
+        df (pd.DataFrame): O DataFrame global de dados de emissões.
+    """
+    while True:
+        print('\n====== MENU DE CONSULTA E VISUALIZAÇÃO DE EMISSÕES ======')
+        print('1 - Visualização Geral por Setor e Atividade Econômica (Detalhe ou Resumo)')
+        print('2 - Consulta Detalhada (Setor, Atividade, Gás e Anos - Detalhe ou Resumo)')
+        print('3 - Estatísticas Gráficas de Emissões por Setor')
+        print('0 - Sair do Programa')
+
+        opcao = input('Digite o número da opção desejada: ').strip()
+        if opcao == '1':
+            visualizacao_geral(df)
+        elif opcao == '2':
+            consulta_detalhada(df)
+        elif opcao == '3':
+            estatisticas_graficas(df)
+        elif opcao == '0':
+            print('Encerrando o programa. Até a próxima!')
+            break
+        else:
+            print('Opção inválida. Digite um número entre 0 e 3.')
+
+# --- Bloco Principal de Execução ---
+if __name__ == '__main__':
+    df_global = None
+    try:
+        df_global = load_or_process_data(EXCEL_FILE_PATH, SHEET_NAME, CSV_FILE_PATH)
+        if df_global is not None:
+            display_validity_stats(df_global)
+            display_menu(df_global)
+    except Exception as e:
+        print(f'O programa foi encerrado devido a um erro crítico: {e}')
