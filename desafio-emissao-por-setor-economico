@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- Configurações globais do sistema ---
+# Link do arquivo original: https://cdn3.gnarususercontent.com.br/2927-pandas-selecao-agrupamento-dados/1-SEEG10_GERAL-BR_UF_2022.10.27-FINAL-SITE.xlsx
 EXCEL_FILE_PATH = 'D:\\Python para Data Science\\1-SEEG10_GERAL-BR_UF_2022.10.27-FINAL-SITE.xlsx'
 SHEET_NAME = 'GEE Estados'
 CSV_FILE_PATH = 'dados_transformados.csv'
